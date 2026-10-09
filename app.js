@@ -8,6 +8,7 @@ const STORAGE_KEY = 'dep-planner-v1';
 const HISTORY_LIMIT = 100;
 const MIN_K = 0.25;
 const MAX_K = 2;
+const FIT_MIN_K = 0.6; // below this, text is unreadable: pan instead of shrinking further
 
 // Label + icon for every visible state. Colour is never the only signal.
 const STATE_UI = {
@@ -254,6 +255,10 @@ function renderCanvas() {
       + (state === 'HELD' ? ' held' : '');
     node.dataset.id = t.id;
     node.dataset.status = t.status;
+    node.tabIndex = 0;
+    node.setAttribute('role', 'button');
+    node.setAttribute('aria-label', `${t.title}, ${ui.label}, ${fmt(t.duration)} days`);
+    node.setAttribute('aria-selected', String(t.id === selectedId));
     node.style.left = p.x + 'px';
     node.style.top = p.y + 'px';
     node.innerHTML = `
@@ -364,7 +369,7 @@ function fitView() {
     applyView();
     return;
   }
-  const k = clamp(Math.min(r.width / layout.width, r.height / layout.height, 1), MIN_K, MAX_K);
+  const k = clamp(Math.min(r.width / layout.width, r.height / layout.height, 1), FIT_MIN_K, MAX_K);
   view.k = k;
   view.x = (r.width - layout.width * k) / 2;
   view.y = (r.height - layout.height * k) / 2;
@@ -414,6 +419,47 @@ els.nodes.addEventListener('click', (e) => {
   if (!node) return;
   selectedId = node.dataset.id;
   renderSelectionOnly();
+});
+
+/** Nearest node by vertical distance among candidates, for keyboard movement. */
+function nearestByY(candidates, fromId) {
+  const fy = layout.pos[fromId].y;
+  return candidates.sort((a, b) =>
+    Math.abs(layout.pos[a].y - fy) - Math.abs(layout.pos[b].y - fy) || layout.pos[a].y - layout.pos[b].y)[0];
+}
+
+/** Keyboard movement: arrows follow dependency edges and columns; Enter selects. */
+els.nodes.addEventListener('keydown', (e) => {
+  const node = e.target.closest('.node');
+  if (!node) return;
+  const id = node.dataset.id;
+  let next = null;
+
+  if (e.key === 'Enter' || e.key === ' ') {
+    e.preventDefault();
+    selectedId = id;
+    renderSelectionOnly();
+    els.nodes.querySelector(`.node[data-id="${id}"]`)?.focus();
+  } else if (e.key === 'ArrowRight') {
+    const kids = [...engine.adj.get(id)];
+    next = kids.length ? nearestByY(kids, id) : null;
+  } else if (e.key === 'ArrowLeft') {
+    const parents = [...engine.revAdj.get(id)];
+    next = parents.length ? nearestByY(parents, id) : null;
+  } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    const x = layout.pos[id].x;
+    const column = [...engine.tasks.keys()].filter((t) => t !== id && layout.pos[t].x === x);
+    const below = column.filter((t) => (e.key === 'ArrowDown' ? layout.pos[t].y > layout.pos[id].y : layout.pos[t].y < layout.pos[id].y));
+    next = below.length ? nearestByY(below, id) : null;
+  } else {
+    return;
+  }
+  e.preventDefault();
+  if (next) {
+    selectedId = next;
+    renderSelectionOnly();
+    els.nodes.querySelector(`.node[data-id="${next}"]`)?.focus();
+  }
 });
 
 els.inspector.addEventListener('click', (e) => {

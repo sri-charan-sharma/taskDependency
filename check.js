@@ -131,6 +131,23 @@ function edgesFlowRight(e, L) {
   ok(edgesFlowRight(e, L) && !overlaps(L.pos), `random DAG (40 tasks, ${edges.length} edges): rightward, no overlap`);
 }
 
+// 12. Two disconnected chains: their row bands must not overlap vertically.
+{
+  const { e, ids } = build(
+    [['A1', 1], ['A2', 1], ['A3', 1], ['B1', 1], ['B2', 1]],
+    [['A1', 'A2'], ['A2', 'A3'], ['B1', 'B2']]
+  );
+  const L = computeLayout(e);
+  const band = (names) => {
+    const ys = names.map((n) => L.pos[ids[n]].y);
+    return [Math.min(...ys), Math.max(...ys) + NODE_H];
+  };
+  const [a0, a1] = band(['A1', 'A2', 'A3']);
+  const [b0, b1] = band(['B1', 'B2']);
+  ok(a1 <= b0 || b1 <= a0, 'components: row bands do not interleave');
+  ok(L.components === 2, 'components: counted as 2');
+}
+
 // 11. edgePath returns a valid cubic curve string.
 {
   const d = edgePath({ x: 0, y: 0 }, { x: 300, y: 50 });
