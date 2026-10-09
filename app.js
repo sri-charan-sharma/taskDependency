@@ -161,17 +161,38 @@ function escapeHtml(s) {
 // ---- add-task form -----------------------------------------------------
 
 els.form.addEventListener('submit', (e) => {
+  // Always prevent default first: this is also what fires when the user
+  // presses Enter inside the form. If required/pattern fields are still
+  // invalid at that point, reportValidity() surfaces the browser's own
+  // inline message (pointing at the first bad field) and we stop — no
+  // task is created from an incomplete form, whether submitted by click
+  // or by Enter.
   e.preventDefault();
-  const title = els.title.value.trim();
-  const duration = els.duration.value;
+  if (!els.form.reportValidity()) return;
+
+  const rawTitle = els.title.value; // engine trims + validates this itself
+  const rawDuration = els.duration.value; // may be '' if cleared after typing
+  // selectedOptions preserves the order the <option> elements were
+  // rendered in, not click order — fine here since a dependency edge
+  // doesn't care what order it was selected in, only that it's a valid
+  // edge. Multiple prerequisites are simply added one at a time below.
   const prereqIds = [...els.prereqs.selectedOptions].map((o) => o.value);
 
-  if (!title) return;
+  let created;
+  try {
+    created = engine.addTask(rawTitle, rawDuration);
+  } catch (err) {
+    // Covers: empty title, non letters/numbers/spaces title, blank
+    // duration, non-numeric duration, zero/negative duration, and
+    // duration over the sanity cap.
+    showBanner(err.message, 'error');
+    return; // form is left exactly as the user had it, for correcting
+  }
 
-  const id = engine.addTask(title, duration);
+  const { id, duplicate } = created;
 
-  // Wire up prerequisites one at a time so a single bad edge doesn't
-  // silently drop the rest — each is independently validated.
+  // Wire up every selected prerequisite; each edge is independently
+  // validated so one bad edge doesn't silently drop the rest.
   const rejected = [];
   for (const pid of prereqIds) {
     try {
@@ -181,11 +202,20 @@ els.form.addEventListener('submit', (e) => {
     }
   }
 
+  const title = engine.tasks.get(id).title;
   els.form.reset();
   els.duration.value = 1;
 
+  const notes = [];
+  if (duplicate) {
+    notes.push(`Note: another task is already named "${title}" — tracked separately, since tasks are identified by id, not by title.`);
+  }
   if (rejected.length) {
-    showBanner(`Added "${title}", but: ${rejected.join(' ')}`, 'error');
+    notes.push(...rejected);
+  }
+
+  if (notes.length) {
+    showBanner(`Added "${title}". ${notes.join(' ')}`, rejected.length ? 'error' : 'ok');
   } else {
     showBanner(`Added "${title}".`, 'ok');
   }

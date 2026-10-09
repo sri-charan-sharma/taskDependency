@@ -134,3 +134,15 @@ Implement Kanban interaction while enforcing graph invariants at drop time.
   - What *can* differ between two correct implementations: tie-breaking when multiple critical paths have equal length, the exact ordering of tasks within a Kanban column, variable/class naming, and visual styling.
   - What must **not** differ, if both implementations are correct: whether a given drag-and-drop move is accepted or rejected, which tasks are `READY` vs `BLOCKED` at any point, the total project duration, and whether a given edge is rejected as a cycle.
   - In short: same inputs + same invariants ⇒ same *decisions*, but not necessarily the same *code* or *pixel layout*.
+
+- [ ] **Input validation (the "Add task" form):** `addTask(title, duration)` is the single entry point for new tasks, so every one of these is rejected *there* — not just hinted at via HTML `required`/`pattern` attributes — so the rule holds no matter what calls it:
+  - **Empty title** (or whitespace-only, e.g. `"   "`) → rejected: `"Task title cannot be empty."`
+  - **Title with anything other than letters, numbers, and spaces** (e.g. `"Design-Schema!"`) → rejected: `"Task title may only contain letters, numbers, and spaces."` Spaces are allowed alongside the "letters and numbers" rule so multi-word titles like `"Design schema"` still work.
+  - **Same task name as an existing task ("same task names"):** allowed, not rejected — two tasks are only ever "the same task" if they share an `id`, and `id`s are engine-generated and never reused, so a same-named task is simply a second, independent task. The UI shows a non-blocking note instead of silently merging them. ("Same id" for two different tasks cannot happen by construction — see `addTask`'s id generation.)
+  - **Duration left blank** → rejected: `"Duration is required."`
+  - **Duration typed as characters** (e.g. `"abc"`) → rejected: `"Duration must be a number."`
+  - **Duration is zero** → rejected: `"Duration must be greater than zero."` (a task that takes 0 days doesn't need to exist as a scheduling unit)
+  - **Duration is negative** → rejected, same message as above.
+  - **Duration is an extremely large number** (e.g. `999999`) → rejected: `"Duration is unreasonably large (max 3650 days)."` — a sanity ceiling (~10 years) catches fat-fingered extra zeros.
+  - **Multiple prerequisites selected** → fully supported; each selected prerequisite is wired up as its own independent edge (via the multi-select), so a task can have any number of parents, and in-degree correctly counts however many of them are still unfinished.
+  - **Enter pressed while the form is incomplete** → the browser's native constraint validation (via `required`/`pattern` on the inputs) blocks the `submit` event from firing at all in the common case; as a second layer, the handler also calls `reportValidity()` and exits before touching the engine if anything is still invalid — so no task is ever created from an incomplete submission, whether triggered by click or by Enter.

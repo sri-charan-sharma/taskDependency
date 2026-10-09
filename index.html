@@ -23,11 +23,27 @@
         <form id="add-task-form">
           <label>
             Title
-            <input type="text" id="task-title" placeholder="e.g. Design schema" required />
+            <input
+              type="text"
+              id="task-title"
+              placeholder="e.g. Design schema"
+              pattern="[A-Za-z0-9 ]+"
+              title="Letters, numbers, and spaces only"
+              required
+            />
           </label>
           <label>
             Duration (days)
-            <input type="number" id="task-duration" min="0" step="0.5" value="1" required />
+            <input
+              type="number"
+              id="task-duration"
+              min="0.5"
+              max="3650"
+              step="0.5"
+              value="1"
+              title="Must be a positive number, up to 3650 days"
+              required
+            />
           </label>
           <label>
             Prerequisites

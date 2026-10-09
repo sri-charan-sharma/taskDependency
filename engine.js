@@ -8,6 +8,7 @@
 class CycleError extends Error {}
 class SelfDependencyError extends Error {}
 class InvalidTransitionError extends Error {}
+class ValidationError extends Error {}
 
 const STATUS = {
   BLOCKED: 'BLOCKED',
@@ -15,6 +16,15 @@ const STATUS = {
   IN_PROGRESS: 'IN_PROGRESS',
   DONE: 'DONE',
 };
+
+// Input-validation rules for addTask(). These live on the engine (not just
+// in the UI) so that *any* caller — the form, a future CLI, an import
+// script, a test — gets the same guarantees. The UI (app.js) duplicates
+// the cheap checks so it can give instant feedback, but the engine is the
+// final authority and never trusts its caller.
+const TITLE_PATTERN = /^[A-Za-z0-9 ]+$/; // letters, numbers, and spaces only
+const MIN_DURATION = 0.5; // smallest allowed task size (half a day); rejects 0 and blank
+const MAX_DURATION = 3650; // ~10 years — a generous ceiling to catch fat-finger numbers
 
 class GraphEngine {
   constructor() {
@@ -33,12 +43,54 @@ class GraphEngine {
 
   // ---- task lifecycle -----------------------------------------------------
 
+  /**
+   * addTask: validates the two raw inputs before anything else touches the
+   * graph. Every one of the following is rejected with a ValidationError
+   * (never silently coerced to some default):
+   *   - empty / whitespace-only title
+   *   - title containing anything other than letters, numbers, and spaces
+   *   - duration left blank
+   *   - duration that isn't a number at all (e.g. typed/pasted letters)
+   *   - duration <= 0 (covers both "zero" and "negative")
+   *   - duration above MAX_DURATION (catches an extra zero or two fat-fingered in)
+   * A duplicate title (same text, different task) is NOT rejected — two
+   * tasks are only ever "the same task" if they share an id, and ids are
+   * generated here and never reused. The caller gets `duplicate: true`
+   * back so the UI can surface a non-blocking notice instead of silently
+   * merging two distinct tasks that happen to share a name.
+   */
   addTask(title, duration) {
+    const cleanTitle = typeof title === 'string' ? title.trim() : '';
+    if (!cleanTitle) {
+      throw new ValidationError('Task title cannot be empty.');
+    }
+    if (!TITLE_PATTERN.test(cleanTitle)) {
+      throw new ValidationError('Task title may only contain letters, numbers, and spaces.');
+    }
+
+    if (duration === '' || duration === null || duration === undefined) {
+      throw new ValidationError('Duration is required.');
+    }
+    const cleanDuration = Number(duration);
+    if (Number.isNaN(cleanDuration)) {
+      throw new ValidationError('Duration must be a number.');
+    }
+    if (cleanDuration <= 0) {
+      throw new ValidationError('Duration must be greater than zero.');
+    }
+    if (cleanDuration > MAX_DURATION) {
+      throw new ValidationError(`Duration is unreasonably large (max ${MAX_DURATION} days).`);
+    }
+
+    const duplicate = [...this.tasks.values()].some(
+      (t) => t.title.toLowerCase() === cleanTitle.toLowerCase()
+    );
+
     const id = 't' + ++this._counter;
     this.tasks.set(id, {
       id,
-      title: String(title),
-      duration: Number(duration) || 0,
+      title: cleanTitle,
+      duration: cleanDuration,
       status: STATUS.BLOCKED, // recalculated immediately below
       isCritical: false,
       overridden: false,
@@ -46,7 +98,7 @@ class GraphEngine {
     this.adj.set(id, new Set());
     this.revAdj.set(id, new Set());
     this.recalculateStatuses();
-    return id;
+    return { id, duplicate };
   }
 
   deleteTask(id) {
