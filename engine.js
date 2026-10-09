@@ -17,18 +17,16 @@ const STATUS = {
   DONE: 'DONE',
 };
 
-// Input-validation rules for addTask(). These live on the engine (not just
-// in the UI) so that *any* caller — the form, a future CLI, an import
-// script, a test — gets the same guarantees. The UI (app.js) duplicates
-// the cheap checks so it can give instant feedback, but the engine is the
-// final authority and never trusts its caller.
+// Input-validation rules for addTask()/updateTask(). These live on the
+// engine (not just in the UI) so that *any* caller — the form, the edit
+// dialog, a future import script, a test — gets the same guarantees.
 const TITLE_PATTERN = /^[A-Za-z0-9 ]+$/; // letters, numbers, and spaces only
 const MIN_DURATION = 0.5; // smallest allowed task size (half a day); rejects 0 and blank
 const MAX_DURATION = 3650; // ~10 years — a generous ceiling to catch fat-finger numbers
 
 class GraphEngine {
   constructor() {
-    /** @type {Map<string, {id:string, title:string, duration:number, status:string, isCritical:boolean, overridden:boolean}>} */
+    /** @type {Map<string, Task>} */
     this.tasks = new Map();
     /** @type {Map<string, Set<string>>} u -> set of v, meaning "u must finish before v" */
     this.adj = new Map();
@@ -38,49 +36,46 @@ class GraphEngine {
     this.overrides = [];
     this._counter = 0;
     this.criticalPath = [];
-    this.totalDuration = 0;
+    this.totalDuration = 0; // CPM "planned" project duration (uses full durations)
+    this.remainingDuration = 0; // CPM duration if DONE tasks count as 0 — "how much is left"
+  }
+
+  // ---- shared validation helpers -----------------------------------------------------
+
+  _validateTitle(title) {
+    const clean = typeof title === 'string' ? title.trim() : '';
+    if (!clean) throw new ValidationError('Task title cannot be empty.');
+    if (!TITLE_PATTERN.test(clean)) {
+      throw new ValidationError('Task title may only contain letters, numbers, and spaces.');
+    }
+    return clean;
+  }
+
+  _validateDuration(duration) {
+    if (duration === '' || duration === null || duration === undefined) {
+      throw new ValidationError('Duration is required.');
+    }
+    const clean = Number(duration);
+    if (Number.isNaN(clean)) throw new ValidationError('Duration must be a number.');
+    if (clean <= 0) throw new ValidationError('Duration must be greater than zero.');
+    if (clean > MAX_DURATION) {
+      throw new ValidationError(`Duration is unreasonably large (max ${MAX_DURATION} days).`);
+    }
+    return clean;
   }
 
   // ---- task lifecycle -----------------------------------------------------
 
   /**
-   * addTask: validates the two raw inputs before anything else touches the
-   * graph. Every one of the following is rejected with a ValidationError
-   * (never silently coerced to some default):
-   *   - empty / whitespace-only title
-   *   - title containing anything other than letters, numbers, and spaces
-   *   - duration left blank
-   *   - duration that isn't a number at all (e.g. typed/pasted letters)
-   *   - duration <= 0 (covers both "zero" and "negative")
-   *   - duration above MAX_DURATION (catches an extra zero or two fat-fingered in)
+   * addTask: validates both raw inputs before anything touches the graph.
    * A duplicate title (same text, different task) is NOT rejected — two
-   * tasks are only ever "the same task" if they share an id, and ids are
+   * tasks are only "the same task" if they share an id, and ids are
    * generated here and never reused. The caller gets `duplicate: true`
-   * back so the UI can surface a non-blocking notice instead of silently
-   * merging two distinct tasks that happen to share a name.
+   * back so the UI can surface a non-blocking notice.
    */
   addTask(title, duration) {
-    const cleanTitle = typeof title === 'string' ? title.trim() : '';
-    if (!cleanTitle) {
-      throw new ValidationError('Task title cannot be empty.');
-    }
-    if (!TITLE_PATTERN.test(cleanTitle)) {
-      throw new ValidationError('Task title may only contain letters, numbers, and spaces.');
-    }
-
-    if (duration === '' || duration === null || duration === undefined) {
-      throw new ValidationError('Duration is required.');
-    }
-    const cleanDuration = Number(duration);
-    if (Number.isNaN(cleanDuration)) {
-      throw new ValidationError('Duration must be a number.');
-    }
-    if (cleanDuration <= 0) {
-      throw new ValidationError('Duration must be greater than zero.');
-    }
-    if (cleanDuration > MAX_DURATION) {
-      throw new ValidationError(`Duration is unreasonably large (max ${MAX_DURATION} days).`);
-    }
+    const cleanTitle = this._validateTitle(title);
+    const cleanDuration = this._validateDuration(duration);
 
     const duplicate = [...this.tasks.values()].some(
       (t) => t.title.toLowerCase() === cleanTitle.toLowerCase()
@@ -94,6 +89,8 @@ class GraphEngine {
       status: STATUS.BLOCKED, // recalculated immediately below
       isCritical: false,
       overridden: false,
+      manuallyPaused: false,
+      cpm: { es: 0, ef: 0, ls: 0, lf: 0, slack: 0 },
     });
     this.adj.set(id, new Set());
     this.revAdj.set(id, new Set());
@@ -101,10 +98,17 @@ class GraphEngine {
     return { id, duplicate };
   }
 
+  /** Edits a task's title and/or duration in place. Same validation as addTask. */
+  updateTask(id, { title, duration } = {}) {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error('Unknown task id: ' + id);
+    if (title !== undefined) task.title = this._validateTitle(title);
+    if (duration !== undefined) task.duration = this._validateDuration(duration);
+    this.recalculateStatuses(); // duration changes ripple through CPM immediately
+  }
+
   deleteTask(id) {
     if (!this.tasks.has(id)) return;
-    // Edge case: cascade-clean every edge that touches this node before
-    // dropping the node itself, so no dangling references remain.
     for (const child of this.adj.get(id)) this.revAdj.get(child).delete(id);
     for (const parent of this.revAdj.get(id)) this.adj.get(parent).delete(id);
     this.adj.delete(id);
@@ -136,21 +140,17 @@ class GraphEngine {
 
   /**
    * addDependency(u, v): "u must finish before v" (edge u -> v).
-   * Edge cases handled:
-   *  - self-dependency (u === v) is rejected before any graph walk.
-   *  - a duplicate edge is a harmless no-op.
-   *  - an edge that would close a cycle (a path v -> ... -> u already
-   *    exists) is rejected. Note a *transitive* edge like A->C, when
-   *    A->B->C already exists, is NOT a cycle — it's accepted.
+   * Self-dependency is rejected before any graph walk. A duplicate edge is
+   * a harmless no-op. An edge that would close a cycle (hasPath(v, u) is
+   * already true) is rejected — note a *transitive* edge like A->C, when
+   * A->B->C already exists, is NOT a cycle and is accepted.
    */
   addDependency(u, v) {
     if (!this.tasks.has(u) || !this.tasks.has(v)) {
       throw new Error('Both tasks must exist before adding a dependency.');
     }
-    if (u === v) {
-      throw new SelfDependencyError('A task cannot depend on itself.');
-    }
-    if (this.adj.get(u).has(v)) return; // already linked, nothing to do
+    if (u === v) throw new SelfDependencyError('A task cannot depend on itself.');
+    if (this.adj.get(u).has(v)) return;
 
     if (this.hasPath(v, u)) {
       throw new CycleError(
@@ -171,9 +171,64 @@ class GraphEngine {
     this.recalculateStatuses();
   }
 
+  /**
+   * Replaces task `id`'s full set of direct prerequisites with
+   * `desiredParentIds` in one go (used by the card-edit dialog). Diffs
+   * against the current parents: removals are applied unconditionally,
+   * additions are validated one at a time so one bad edge (self-dep,
+   * cycle) doesn't block the rest. Returns the list of rejection messages,
+   * if any — removals and the valid additions still take effect.
+   */
+  setPrerequisites(id, desiredParentIds) {
+    if (!this.tasks.has(id)) throw new Error('Unknown task id: ' + id);
+    const current = new Set(this.revAdj.get(id));
+    const desired = new Set(desiredParentIds);
+
+    for (const p of current) {
+      if (!desired.has(p)) this.removeDependency(p, id);
+    }
+    const rejected = [];
+    for (const p of desired) {
+      if (!current.has(p)) {
+        try {
+          this.addDependency(p, id);
+        } catch (err) {
+          rejected.push(err.message);
+        }
+      }
+    }
+    return rejected;
+  }
+
+  // ---- manual pause (right-click "Mark as Blocked" / "Unblock") -----------------------------------------------------
+
+  /**
+   * Manually forces a task back to BLOCKED even if its dependencies are
+   * satisfied — e.g. "we're ready to start but waiting on a teammate".
+   * This is tracked separately from the automatic BLOCKED/READY rule via
+   * `manuallyPaused`, so it survives recalculateStatuses() until resumed.
+   * Not allowed once a task is already IN_PROGRESS or DONE.
+   */
+  pauseTask(id) {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error('Unknown task id: ' + id);
+    if (task.status === STATUS.IN_PROGRESS || task.status === STATUS.DONE) {
+      throw new InvalidTransitionError(`Cannot manually block "${task.title}" — it's already ${task.status.toLowerCase().replace('_', ' ')}.`);
+    }
+    task.manuallyPaused = true;
+    this.recalculateStatuses();
+  }
+
+  resumeTask(id) {
+    const task = this.tasks.get(id);
+    if (!task) throw new Error('Unknown task id: ' + id);
+    task.manuallyPaused = false;
+    this.recalculateStatuses();
+  }
+
   // ---- status engine -----------------------------------------------------
 
-  /** In-degree counts only *unfinished* prerequisites. */
+  /** In-degree counts only *unfinished* direct prerequisites. */
   getInDegree(id) {
     const parents = this.revAdj.get(id);
     if (!parents) return 0;
@@ -186,16 +241,21 @@ class GraphEngine {
 
   /**
    * Re-derives BLOCKED/READY for every task that isn't already IN_PROGRESS
-   * or DONE (those are states a human explicitly put the task into).
-   * A task with zero unfinished prerequisites — including a brand-new task
-   * with no prerequisites at all — lands in READY "for free" here.
+   * or DONE (those are states a human explicitly put the task into). A
+   * manually-paused task is pinned to BLOCKED regardless of in-degree,
+   * until resumeTask() clears the flag. A brand-new task with no
+   * prerequisites lands in READY "for free" here.
    */
   recalculateStatuses() {
     for (const task of this.tasks.values()) {
       if (task.status === STATUS.DONE || task.status === STATUS.IN_PROGRESS) continue;
+      if (task.manuallyPaused) {
+        task.status = STATUS.BLOCKED;
+        continue;
+      }
       task.status = this.getInDegree(task.id) === 0 ? STATUS.READY : STATUS.BLOCKED;
     }
-    this._computeCriticalPath();
+    this._computeCPM();
   }
 
   /**
@@ -204,6 +264,8 @@ class GraphEngine {
    *   - READY / IN_PROGRESS are refused while in-degree > 0.
    *   - DONE is refused while in-degree > 0 UNLESS { override: true } is
    *     passed, in which case it's allowed but logged as an inconsistency.
+   * Moving a task back to BLOCKED by hand goes through pauseTask(),
+   * not here, so that the manual-pause flag stays consistent.
    */
   transitionTask(id, targetStatus, { override = false } = {}) {
     const task = this.tasks.get(id);
@@ -226,19 +288,15 @@ class GraphEngine {
         .filter((p) => this.tasks.get(p).status !== STATUS.DONE)
         .map((p) => this.tasks.get(p).title);
       task.overridden = true;
-      this.overrides.unshift({
-        taskId: id,
-        title: task.title,
-        timestamp: Date.now(),
-        incompleteParents,
-      });
+      this.overrides.unshift({ taskId: id, title: task.title, timestamp: Date.now(), incompleteParents });
     }
 
+    if (targetStatus !== STATUS.BLOCKED) task.manuallyPaused = false; // leaving BLOCKED clears any manual pause
     task.status = targetStatus;
     this.recalculateStatuses();
   }
 
-  // ---- topological order & critical path -----------------------------------------------------
+  // ---- topological order -----------------------------------------------------
 
   /** Kahn's algorithm. Returns ids in a valid topological order. */
   getTopologicalSort() {
@@ -254,56 +312,84 @@ class GraphEngine {
         if (inDeg.get(m) === 0) queue.push(m);
       }
     }
-    return order; // length === tasks.size, since addDependency never allows a cycle in
+    return order; // length === tasks.size, since addDependency never lets a cycle in
   }
 
-  /**
-   * Longest-path-by-duration over the DAG, computed with one DP pass over
-   * the topological order: dist[v] = v.duration + max(dist[u] for u -> v).
-   * The task with the largest dist[] is the end of the critical path.
-   */
-  _computeCriticalPath() {
-    const order = this.getTopologicalSort();
-    const dist = new Map();
-    const prev = new Map();
+  // ---- Critical Path Method (CPM) -----------------------------------------------------
 
+  /**
+   * Full forward/backward CPM pass:
+   *   ES[v] = max(EF[u]) over direct parents u, or 0 if v has none
+   *   EF[v] = ES[v] + duration[v]
+   *   LF[v] = min(LS[w]) over direct children w, or project duration if none
+   *   LS[v] = LF[v] - duration[v]
+   *   slack[v] = LS[v] - ES[v]  (equivalently LF[v] - EF[v])
+   * Any task with slack 0 is on a/the critical path — note a diamond-
+   * shaped graph can have two equal-length parallel critical paths, and
+   * both get marked, not just one arbitrarily chosen branch.
+   *
+   * Runs twice: once with every task's full duration (the traditional,
+   * status-independent "planned" CPM — this drives `isCritical` styling
+   * and the on-card ES/EF/LS/LF/slack numbers), and once treating DONE
+   * tasks as taking 0 time (the "remaining" CPM — just a single number,
+   * `remainingDuration`, used for the live completion-date estimate).
+   */
+  _computeCPM() {
+    const order = this.getTopologicalSort();
+
+    // --- planned pass (full durations; drives per-task CPM + isCritical) ---
+    const ES = new Map(), EF = new Map(), prevOnPath = new Map();
     for (const id of order) {
       const task = this.tasks.get(id);
-      let best = task.duration;
-      let bestPrev = null;
+      let es = 0, bestPrev = null;
       for (const p of this.revAdj.get(id)) {
-        const candidate = dist.get(p) + task.duration;
-        if (candidate > best) {
-          best = candidate;
-          bestPrev = p;
-        }
+        const efP = EF.get(p);
+        if (efP > es) { es = efP; bestPrev = p; }
       }
-      dist.set(id, best);
-      prev.set(id, bestPrev);
+      ES.set(id, es);
+      EF.set(id, es + task.duration);
+      prevOnPath.set(id, bestPrev);
+    }
+    const plannedDuration = order.length ? Math.max(...order.map((id) => EF.get(id))) : 0;
+
+    const LS = new Map(), LF = new Map();
+    for (const id of [...order].reverse()) {
+      const task = this.tasks.get(id);
+      const children = this.adj.get(id);
+      const lf = children.size ? Math.min(...[...children].map((c) => LS.get(c))) : plannedDuration;
+      LF.set(id, lf);
+      LS.set(id, lf - task.duration);
     }
 
-    let endId = null;
-    let maxDist = -Infinity;
-    for (const [id, d] of dist) {
-      if (d > maxDist) {
-        maxDist = d;
-        endId = id;
-      }
+    let endId = null, maxEF = -Infinity;
+    for (const id of order) {
+      const task = this.tasks.get(id);
+      const slack = LS.get(id) - ES.get(id);
+      task.cpm = { es: ES.get(id), ef: EF.get(id), ls: LS.get(id), lf: LF.get(id), slack };
+      task.isCritical = Math.abs(slack) < 1e-9;
+      if (EF.get(id) > maxEF) { maxEF = EF.get(id); endId = id; }
     }
 
     const path = [];
     let cur = endId;
     while (cur !== null && cur !== undefined) {
       path.push(cur);
-      cur = prev.get(cur);
+      cur = prevOnPath.get(cur);
     }
     path.reverse();
-
-    const criticalSet = new Set(path);
-    for (const task of this.tasks.values()) task.isCritical = criticalSet.has(task.id);
-
     this.criticalPath = path;
-    this.totalDuration = this.tasks.size ? maxDist : 0;
+    this.totalDuration = order.length ? plannedDuration : 0;
+
+    // --- remaining pass (DONE tasks cost 0 — "how much is left from here") ---
+    const remEF = new Map();
+    for (const id of order) {
+      const task = this.tasks.get(id);
+      const effectiveDuration = task.status === STATUS.DONE ? 0 : task.duration;
+      let es = 0;
+      for (const p of this.revAdj.get(id)) es = Math.max(es, remEF.get(p));
+      remEF.set(id, es + effectiveDuration);
+    }
+    this.remainingDuration = order.length ? Math.max(...order.map((id) => remEF.get(id))) : 0;
   }
 
   getCriticalPathTitles() {

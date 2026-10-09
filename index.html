@@ -11,12 +11,28 @@
   <header class="topbar">
     <h1>Dependency Planner</h1>
     <p class="subtitle">A DAG execution engine, visualized as a Kanban board.</p>
+    <div class="topbar-actions">
+      <button id="undo-btn" class="secondary" title="Undo (Ctrl+Z)">↶ Undo</button>
+      <button id="redo-btn" class="secondary" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
+      <button id="toggle-connections" class="secondary">Show dependency lines</button>
+    </div>
   </header>
 
   <main class="layout">
 
     <!-- ============ LEFT: controls + diagnostics ============ -->
     <aside class="sidebar">
+
+      <section class="panel">
+        <h2>Load a preset</h2>
+        <select id="preset-select">
+          <option value="">— Choose a preset —</option>
+          <option value="webapp">Web App Release</option>
+          <option value="cicd">CI/CD Pipeline</option>
+          <option value="microservices">Microservice Migration</option>
+        </select>
+        <span class="hint">Replaces the current board — good for seeing branching/critical-path mechanics right away.</span>
+      </section>
 
       <section class="panel">
         <h2>Add task</h2>
@@ -62,10 +78,14 @@
       <section class="panel">
         <h2>Diagnostics</h2>
         <dl class="diagnostics">
-          <dt>Total duration</dt>
+          <dt>Planned duration</dt>
           <dd id="diag-duration">—</dd>
           <dt>Critical path</dt>
           <dd id="diag-path">—</dd>
+          <dt>Remaining (from now)</dt>
+          <dd id="diag-remaining">—</dd>
+          <dt>Est. completion</dt>
+          <dd id="diag-completion">—</dd>
         </dl>
       </section>
 
@@ -83,6 +103,7 @@
 
     <!-- ============ RIGHT: kanban board ============ -->
     <section class="board" id="board">
+      <svg id="connections-overlay" class="connections-overlay"></svg>
       <div class="column" data-status="BLOCKED">
         <h3>Blocked</h3>
         <div class="column-list" data-dropzone="BLOCKED"></div>
@@ -103,7 +124,7 @@
 
   </main>
 
-  <!-- Confirm dialog used only for the "force-complete" override edge case -->
+  <!-- Confirm dialog for the "force-complete" override edge case -->
   <dialog id="override-dialog">
     <form method="dialog">
       <p id="override-message"></p>
@@ -113,6 +134,44 @@
       </menu>
     </form>
   </dialog>
+
+  <!-- Edit dialog: title, duration, prerequisites — all without delete+recreate -->
+  <dialog id="edit-dialog">
+    <form id="edit-form" method="dialog">
+      <h2>Edit task</h2>
+      <label>
+        Title
+        <input type="text" id="edit-title" pattern="[A-Za-z0-9 ]+" title="Letters, numbers, and spaces only" required />
+      </label>
+      <label>
+        Duration (days)
+        <input type="number" id="edit-duration" min="0.5" max="3650" step="0.5" required />
+      </label>
+      <label>
+        Prerequisites
+        <select id="edit-prereqs" multiple size="6"></select>
+        <span class="hint">This task itself is never listed here, so self-dependency can't be selected.</span>
+      </label>
+      <p id="edit-error" class="hint error-text" hidden></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="save" class="primary">Save</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <!-- Inspect dialog: CPM numbers + direct blockers/unblocks for one task -->
+  <dialog id="inspect-dialog">
+    <form method="dialog">
+      <h2 id="inspect-title"></h2>
+      <dl class="diagnostics" id="inspect-cpm"></dl>
+      <div id="inspect-lists"></div>
+      <menu><button value="close">Close</button></menu>
+    </form>
+  </dialog>
+
+  <!-- Right-click context menu -->
+  <ul id="context-menu" class="context-menu" hidden></ul>
 
   <script src="engine.js"></script>
   <script src="app.js"></script>
