@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Dependency-Aware Project Planner</title>
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <header class="topbar">
+    <h1>Dependency Planner</h1>
+    <p class="subtitle">A DAG execution engine, visualized as a Kanban board.</p>
+  </header>
+
+  <main class="layout">
+
+    <!-- ============ LEFT: controls + diagnostics ============ -->
+    <aside class="sidebar">
+
+      <section class="panel">
+        <h2>Add task</h2>
+        <form id="add-task-form">
+          <label>
+            Title
+            <input type="text" id="task-title" placeholder="e.g. Design schema" required />
+          </label>
+          <label>
+            Duration (days)
+            <input type="number" id="task-duration" min="0" step="0.5" value="1" required />
+          </label>
+          <label>
+            Prerequisites
+            <select id="task-prereqs" multiple size="5"></select>
+            <span class="hint">Cmd/Ctrl-click to select several, or none.</span>
+          </label>
+          <button type="submit">Add task</button>
+        </form>
+      </section>
+
+      <section class="panel" id="banner-panel" hidden>
+        <h2>Last event</h2>
+        <div id="banner"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Diagnostics</h2>
+        <dl class="diagnostics">
+          <dt>Total duration</dt>
+          <dd id="diag-duration">—</dd>
+          <dt>Critical path</dt>
+          <dd id="diag-path">—</dd>
+        </dl>
+      </section>
+
+      <section class="panel" id="overrides-panel" hidden>
+        <h2>Override log</h2>
+        <p class="hint">Tasks force-completed while prerequisites were still open.</p>
+        <ul id="overrides-list"></ul>
+      </section>
+
+      <section class="panel">
+        <button id="reset-btn" class="secondary">Clear board</button>
+      </section>
+
+    </aside>
+
+    <!-- ============ RIGHT: kanban board ============ -->
+    <section class="board" id="board">
+      <div class="column" data-status="BLOCKED">
+        <h3>Blocked</h3>
+        <div class="column-list" data-dropzone="BLOCKED"></div>
+      </div>
+      <div class="column" data-status="READY">
+        <h3>Ready</h3>
+        <div class="column-list" data-dropzone="READY"></div>
+      </div>
+      <div class="column" data-status="IN_PROGRESS">
+        <h3>In progress</h3>
+        <div class="column-list" data-dropzone="IN_PROGRESS"></div>
+      </div>
+      <div class="column" data-status="DONE">
+        <h3>Done</h3>
+        <div class="column-list" data-dropzone="DONE"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Confirm dialog used only for the "force-complete" override edge case -->
+  <dialog id="override-dialog">
+    <form method="dialog">
+      <p id="override-message"></p>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button value="confirm" class="danger">Complete anyway</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="engine.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
