@@ -3,128 +3,106 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Dependency-Aware Project Planner</title>
+<title>Flowforge</title>
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
 
   <header class="topbar">
-    <h1>Dependency Planner</h1>
-    <p class="subtitle">A DAG execution engine, visualized as a Kanban board.</p>
-    <div class="topbar-actions">
-      <button id="undo-btn" class="secondary" title="Undo (Ctrl+Z)">↶ Undo</button>
-      <button id="redo-btn" class="secondary" title="Redo (Ctrl+Shift+Z)">↷ Redo</button>
-      <button id="toggle-connections" class="secondary">Show dependency lines</button>
+    <div>
+      <h1>Flowforge</h1>
+      <p class="subtitle">Dependency-aware project flow</p>
+    </div>
+    <div class="toolbar">
+      <button id="undo-btn" class="ghost" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="redo-btn" class="ghost" title="Redo (Ctrl+Y)">Redo</button>
+      <button id="reset-btn" class="danger">Clear board</button>
     </div>
   </header>
 
-  <main class="layout">
+  <div class="workspace">
 
-    <!-- ============ LEFT: controls + diagnostics ============ -->
+    <!-- LEFT: create, presets, diagnostics, events -->
     <aside class="sidebar">
+      <details id="add-section" open>
+        <summary>New task</summary>
+        <form id="add-task-form">
+          <label>
+            Title
+            <input type="text" id="task-title" placeholder="e.g. Design schema"
+              pattern="[A-Za-z0-9 ]+" title="Letters, numbers, and spaces only" required />
+          </label>
+          <label>
+            Duration (days)
+            <input type="number" id="task-duration" min="0.5" max="3650" step="0.5" value="1"
+              title="Positive number, up to 3650 days" required />
+          </label>
+          <label>
+            Prerequisites
+            <select id="task-prereqs" multiple size="4"></select>
+            <span class="hint">Ctrl/Cmd-click to select several.</span>
+          </label>
+          <button type="submit" class="primary">Add task</button>
+        </form>
+      </details>
 
-      <section class="panel">
-        <h2>Load a preset</h2>
+      <details>
+        <summary>Presets</summary>
         <select id="preset-select">
-          <option value="">— Choose a preset —</option>
+          <option value="">Choose a preset…</option>
           <option value="webapp">Web App Release</option>
           <option value="cicd">CI/CD Pipeline</option>
           <option value="microservices">Microservice Migration</option>
         </select>
-        <span class="hint">Replaces the current board — good for seeing branching/critical-path mechanics right away.</span>
-      </section>
+        <span class="hint">Replaces the current board.</span>
+      </details>
 
-      <section class="panel">
-        <h2>Add task</h2>
-        <form id="add-task-form">
-          <label>
-            Title
-            <input
-              type="text"
-              id="task-title"
-              placeholder="e.g. Design schema"
-              pattern="[A-Za-z0-9 ]+"
-              title="Letters, numbers, and spaces only"
-              required
-            />
-          </label>
-          <label>
-            Duration (days)
-            <input
-              type="number"
-              id="task-duration"
-              min="0.5"
-              max="3650"
-              step="0.5"
-              value="1"
-              title="Must be a positive number, up to 3650 days"
-              required
-            />
-          </label>
-          <label>
-            Prerequisites
-            <select id="task-prereqs" multiple size="5"></select>
-            <span class="hint">Cmd/Ctrl-click to select several, or none.</span>
-          </label>
-          <button type="submit">Add task</button>
-        </form>
-      </section>
+      <details open>
+        <summary>Diagnostics</summary>
+        <dl class="diagnostics">
+          <dt>Planned</dt><dd id="diag-duration">—</dd>
+          <dt>Remaining</dt><dd id="diag-remaining">—</dd>
+          <dt>Est. finish</dt><dd id="diag-completion">—</dd>
+          <dt>Critical path</dt><dd id="diag-path" class="wrap">—</dd>
+        </dl>
+      </details>
 
       <section class="panel" id="banner-panel" hidden>
-        <h2>Last event</h2>
+        <h2>Recent event</h2>
         <div id="banner"></div>
-      </section>
-
-      <section class="panel">
-        <h2>Diagnostics</h2>
-        <dl class="diagnostics">
-          <dt>Planned duration</dt>
-          <dd id="diag-duration">—</dd>
-          <dt>Critical path</dt>
-          <dd id="diag-path">—</dd>
-          <dt>Remaining (from now)</dt>
-          <dd id="diag-remaining">—</dd>
-          <dt>Est. completion</dt>
-          <dd id="diag-completion">—</dd>
-        </dl>
       </section>
 
       <section class="panel" id="overrides-panel" hidden>
         <h2>Override log</h2>
-        <p class="hint">Tasks force-completed while prerequisites were still open.</p>
+        <p class="hint">Force-completed while prerequisites were open.</p>
         <ul id="overrides-list"></ul>
       </section>
-
-      <section class="panel">
-        <button id="reset-btn" class="secondary">Clear board</button>
-      </section>
-
     </aside>
 
-    <!-- ============ RIGHT: kanban board ============ -->
-    <section class="board" id="board">
-      <svg id="connections-overlay" class="connections-overlay"></svg>
-      <div class="column" data-status="BLOCKED">
-        <h3>Blocked</h3>
-        <div class="column-list" data-dropzone="BLOCKED"></div>
+    <!-- CENTER: dependency flowchart -->
+    <main class="canvas-wrap">
+      <div id="viewport" class="viewport">
+        <div id="world" class="world">
+          <svg id="edges" class="edges"></svg>
+          <div id="nodes" class="nodes"></div>
+        </div>
       </div>
-      <div class="column" data-status="READY">
-        <h3>Ready</h3>
-        <div class="column-list" data-dropzone="READY"></div>
+      <p id="empty-hint" class="empty-hint">Add a task, or load a preset, to start the flow.</p>
+      <div class="zoom-controls">
+        <button id="zoom-out" class="ghost" title="Zoom out">−</button>
+        <button id="zoom-fit" class="ghost" title="Fit graph to view">Fit</button>
+        <button id="zoom-in" class="ghost" title="Zoom in">+</button>
       </div>
-      <div class="column" data-status="IN_PROGRESS">
-        <h3>In progress</h3>
-        <div class="column-list" data-dropzone="IN_PROGRESS"></div>
-      </div>
-      <div class="column" data-status="DONE">
-        <h3>Done</h3>
-        <div class="column-list" data-dropzone="DONE"></div>
-      </div>
-    </section>
+    </main>
 
-  </main>
+    <!-- RIGHT: inspector for the selected task -->
+    <aside class="inspector" id="inspector">
+      <p class="hint">Select a task to see its details, prerequisites, unlocks, and actions.</p>
+    </aside>
 
-  <!-- Confirm dialog for the "force-complete" override edge case -->
+  </div>
+
+  <!-- Override confirmation: completing a task whose prerequisites are open -->
   <dialog id="override-dialog">
     <form method="dialog">
       <p id="override-message"></p>
@@ -135,7 +113,7 @@
     </form>
   </dialog>
 
-  <!-- Edit dialog: title, duration, prerequisites — all without delete+recreate -->
+  <!-- Edit: title, duration, prerequisites -->
   <dialog id="edit-dialog">
     <form id="edit-form" method="dialog">
       <h2>Edit task</h2>
@@ -150,7 +128,7 @@
       <label>
         Prerequisites
         <select id="edit-prereqs" multiple size="6"></select>
-        <span class="hint">This task itself is never listed here, so self-dependency can't be selected.</span>
+        <span class="hint">A task can never be its own prerequisite.</span>
       </label>
       <p id="edit-error" class="hint error-text" hidden></p>
       <menu>
@@ -160,20 +138,8 @@
     </form>
   </dialog>
 
-  <!-- Inspect dialog: CPM numbers + direct blockers/unblocks for one task -->
-  <dialog id="inspect-dialog">
-    <form method="dialog">
-      <h2 id="inspect-title"></h2>
-      <dl class="diagnostics" id="inspect-cpm"></dl>
-      <div id="inspect-lists"></div>
-      <menu><button value="close">Close</button></menu>
-    </form>
-  </dialog>
-
-  <!-- Right-click context menu -->
-  <ul id="context-menu" class="context-menu" hidden></ul>
-
   <script src="engine.js"></script>
+  <script src="layout.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
