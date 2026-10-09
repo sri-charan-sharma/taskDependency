@@ -163,7 +163,7 @@ button.danger { background: transparent; color: var(--blocked); border-color: rg
   overflow: hidden;
 }
 .viewport.panning { cursor: grabbing; }
-.world { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.world { position: absolute; left: 0; top: 0; transform-origin: 0 0; --k: 1; }
 .edges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
 .edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
 .edge.edge-crit { stroke: var(--critical); stroke-width: 2; }
@@ -222,10 +222,16 @@ button.danger { background: transparent; color: var(--blocked); border-color: rg
 .node:hover { border-color: #3a4150; }
 .node.shake { animation: shake 0.3s ease; }
 
-.node-head { display: flex; justify-content: space-between; align-items: center; font-size: 11px; }
+/* Text counter-scales with zoom so it stays readable on screen. Clamped at both ends. */
+.node-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: clamp(11px, calc(10px / var(--k)), 24px);
+}
 .node-dur { font-family: var(--mono); color: var(--muted); }
 .node-title {
-  font-size: 13.5px;
+  font-size: clamp(13.5px, calc(12px / var(--k)), 30px);
   font-weight: 600;
   white-space: nowrap;
   overflow: hidden;
@@ -240,6 +246,11 @@ button.danger { background: transparent; color: var(--blocked); border-color: rg
   white-space: nowrap;
 }
 .node-meta .crit { color: var(--critical); font-weight: 600; }
+
+/* Compact mode (zoomed out): drop secondary lines, keep title, icon, duration, and colour. */
+.world.compact .node-meta { display: none; }
+.world.compact .chip-label { display: none; }
+.world.compact .node { gap: 4px; }
 .node-meta .warn { color: var(--critical); }
 
 /* State chip: icon + text, coloured to match its border. */

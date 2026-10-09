@@ -6,9 +6,12 @@
 
 const STORAGE_KEY = 'dep-planner-v1';
 const HISTORY_LIMIT = 100;
-const MIN_K = 0.25;
+const MIN_K = 0.35;       // text counter-scales, so this is the smallest readable zoom
 const MAX_K = 2;
-const FIT_MIN_K = 0.6; // below this, text is unreadable: pan instead of shrinking further
+const FIT_MIN_K = 0.35;
+const COMPACT_K = 0.7;    // below this, cards drop secondary lines
+const EDGE_ZONE = 56;     // px from a canvas edge where edge-pan starts
+const EDGE_SPEED = 16;   // px per frame at the very edge
 
 // Label + icon for every visible state. Colour is never the only signal.
 const STATE_UI = {
@@ -37,6 +40,9 @@ let selectedId = null;
 let editingId = null;
 let hasFit = false;
 const view = { x: 0, y: 0, k: 1 };
+let edgePan = true;
+let pointer = null;
+let edgeRaf = 0;
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -62,6 +68,7 @@ const els = {
   nodes: $('nodes'),
   emptyHint: $('empty-hint'),
   zoomIn: $('zoom-in'),
+  edgePanBtn: $('edge-pan'),
   zoomOut: $('zoom-out'),
   zoomFit: $('zoom-fit'),
   inspector: $('inspector'),
@@ -263,7 +270,7 @@ function renderCanvas() {
     node.style.top = p.y + 'px';
     node.innerHTML = `
       <div class="node-head">
-        <span class="state-chip" data-state="${state}"><span aria-hidden="true">${ui.icon}</span>${ui.label}</span>
+        <span class="state-chip" data-state="${state}"><span class="chip-icon" aria-hidden="true">${ui.icon}</span><span class="chip-label">${ui.label}</span></span>
         <span class="node-dur">${fmt(t.duration)}d</span>
       </div>
       <div class="node-title" title="${esc(t.title)}">${esc(t.title)}</div>
@@ -318,7 +325,7 @@ function renderInspector() {
     `<button data-act="${a.act}" class="${a.cls || ''}">${a.label}</button>`).join('');
 
   els.inspector.innerHTML = `
-    <span class="state-chip" data-state="${state}"><span aria-hidden="true">${ui.icon}</span>${ui.label}</span>
+    <span class="state-chip" data-state="${state}"><span class="chip-icon" aria-hidden="true">${ui.icon}</span><span class="chip-label">${ui.label}</span></span>
     <h2 class="insp-title">${esc(t.title)}</h2>
     <dl class="diagnostics">
       <dt>Duration</dt><dd>${fmt(t.duration)} days</dd>
@@ -345,6 +352,17 @@ function renderSelectionOnly() {
 
 function applyView() {
   els.world.style.transform = `translate(${view.x}px, ${view.y}px) scale(${view.k})`;
+  els.world.style.setProperty('--k', String(view.k));
+  els.world.classList.toggle('compact', view.k < COMPACT_K);
+}
+
+/** Keeps at least a sliver of the graph on screen so panning can't lose it. */
+function clampView() {
+  const r = els.viewport.getBoundingClientRect();
+  if (!layout.width) return;
+  const m = 60;
+  view.x = clamp(view.x, m - layout.width * view.k, r.width - m);
+  view.y = clamp(view.y, m - layout.height * view.k, r.height - m);
 }
 
 function zoomAt(px, py, factor) {
@@ -391,13 +409,51 @@ els.viewport.addEventListener('pointerdown', (e) => {
   els.viewport.classList.add('panning');
 });
 els.viewport.addEventListener('pointermove', (e) => {
-  if (!panning) return;
+  pointer = { x: e.clientX, y: e.clientY };
+  if (!panning) {
+    startEdgePan();
+    return;
+  }
   const dx = e.clientX - panning.x;
   const dy = e.clientY - panning.y;
   if (Math.abs(dx) + Math.abs(dy) > 3) panning.moved = true;
   view.x = panning.vx + dx;
   view.y = panning.vy + dy;
+  clampView();
   applyView();
+});
+els.viewport.addEventListener('pointerleave', () => { pointer = null; });
+
+/** Content velocity for one axis: pointer near the start edge pulls content in, near the far edge pushes it out. */
+function edgeVelocity(p, size) {
+  if (p < EDGE_ZONE) return EDGE_SPEED * (1 - p / EDGE_ZONE);
+  if (p > size - EDGE_ZONE) return -EDGE_SPEED * (1 - (size - p) / EDGE_ZONE);
+  return 0;
+}
+
+/** Scrolls the view while the pointer sits near any canvas edge. Stops when it leaves. */
+function edgeStep() {
+  edgeRaf = 0;
+  if (!edgePan || !pointer || panning) return;
+  const r = els.viewport.getBoundingClientRect();
+  const vx = edgeVelocity(pointer.x - r.left, r.width);
+  const vy = edgeVelocity(pointer.y - r.top, r.height);
+  if (!vx && !vy) return;
+  view.x += vx;
+  view.y += vy;
+  clampView();
+  applyView();
+  edgeRaf = requestAnimationFrame(edgeStep);
+}
+
+function startEdgePan() {
+  if (edgePan && !edgeRaf) edgeRaf = requestAnimationFrame(edgeStep);
+}
+
+els.edgePanBtn.addEventListener('click', () => {
+  edgePan = !edgePan;
+  els.edgePanBtn.textContent = `Edge pan: ${edgePan ? 'on' : 'off'}`;
+  if (edgePan) startEdgePan();
 });
 els.viewport.addEventListener('pointerup', () => {
   if (panning && !panning.moved) {

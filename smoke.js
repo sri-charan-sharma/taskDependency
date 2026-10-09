@@ -13,7 +13,7 @@ function makeEl(id = '') {
   let html = '';
   const el = {
     id, value: '', textContent: '', hidden: false, className: '', open: false,
-    style: {}, dataset: {}, disabled: false, selectedOptions: [], options: [],
+    style: { setProperty() {} }, dataset: {}, disabled: false, selectedOptions: [], options: [],
     attributes: {}, children: [], tagName: 'DIV', returnValue: '',
     classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
     get innerHTML() { return html; },
@@ -64,6 +64,7 @@ const ctx = {
     error: (...a) => { errors++; log.push('ERROR ' + a.join(' ')); },
   },
   confirm: () => true, setTimeout: (fn) => fn(),
+  requestAnimationFrame: (fn) => { ctx.__raf = fn; return 1; },
   Date, JSON, Math, Map, Set, Number, String, Array, Object, Promise,
 };
 vm.createContext(ctx);
@@ -179,6 +180,40 @@ keyOn(child, 'ArrowLeft');
 check(eng('selectedId') === root, 'keyboard: ArrowLeft returns to the parent');
 keyOn(root, 'ArrowUp');
 check(eng('selectedId') === root, 'keyboard: ArrowUp with nothing above stays put');
+
+// ---- semantic zoom and edge pan ---------------------------------------
+fire('zoom-out', 'click'); fire('zoom-out', 'click'); fire('zoom-out', 'click'); fire('zoom-out', 'click');
+fire('zoom-out', 'click'); fire('zoom-out', 'click'); fire('zoom-out', 'click'); fire('zoom-out', 'click');
+check(eng('view.k') >= 0.35 - 1e-9, 'zoom: never below readable floor (0.35)');
+check(eng('view.k') < 0.7, 'zoom: out far enough to enter compact mode');
+fire('zoom-fit', 'click');
+check(eng('view.k') >= 0.35 - 1e-9 && eng('view.k') <= 1, 'fit: scale within [0.35, 1]');
+
+// Pointer near the left edge starts edge-pan and moves content right (view.x grows).
+const x0 = eng('view.x');
+fire('viewport', 'pointermove', { clientX: 5, clientY: 300 });
+check(eng('pointer !== null') === true, 'edge-pan: pointer tracked');
+check(eng('edgeRaf') !== 0, 'edge-pan: frame loop started near edge');
+ctx.__raf();
+check(eng('view.x') > x0, 'edge-pan: left edge reveals content on the left');
+
+// Pointer near the bottom edge pans the other way (view.y shrinks).
+const y0 = eng('view.y');
+fire('viewport', 'pointermove', { clientX: 400, clientY: 595 });
+check(eng('edgeRaf') !== 0, 'edge-pan: bottom edge starts a frame loop');
+ctx.__raf();
+check(eng('view.y') < y0, 'edge-pan: bottom edge pushes content up (view.y shrinks)');
+
+// Toggle off: pointer near edge must not start a loop.
+fire('edge-pan', 'click');
+check(eng('edgePan') === false, 'edge-pan toggle: switches off');
+eng('edgeRaf = 0');
+fire('viewport', 'pointermove', { clientX: 5, clientY: 300 });
+check(eng('edgeRaf') === 0, 'edge-pan off: no frame loop');
+fire('edge-pan', 'click');
+check(eng('edgePan') === true, 'edge-pan toggle: switches back on');
+fire('viewport', 'pointerleave');
+check(eng('pointer') === null, 'edge-pan: leaving canvas clears pointer');
 
 // ---- reset ----------------------------------------------------------
 fire('reset-btn', 'click');
