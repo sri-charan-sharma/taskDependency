@@ -209,8 +209,9 @@ button.danger { background: transparent; color: var(--blocked); border-color: rg
   border-left: 3px solid var(--done);
   border-radius: 10px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.35);
-  cursor: pointer;
+  cursor: grab;
   user-select: none;
+  touch-action: none;
 }
 .node[data-status="BLOCKED"] { border-left-color: var(--blocked); }
 .node[data-status="READY"] { border-left-color: var(--ready); }
@@ -220,6 +221,7 @@ button.danger { background: transparent; color: var(--blocked); border-color: rg
 .node.critical { box-shadow: 0 0 0 1px rgba(232,176,74,0.7), 0 2px 8px rgba(0,0,0,0.35); }
 .node.selected { outline: 2px solid var(--accent); outline-offset: 2px; }
 .node:hover { border-color: #3a4150; }
+.node.dragging { cursor: grabbing; box-shadow: 0 10px 24px rgba(0,0,0,0.5); z-index: 5; }
 .node.shake { animation: shake 0.3s ease; }
 
 /* Text counter-scales with zoom so it stays readable on screen. Clamped at both ends. */

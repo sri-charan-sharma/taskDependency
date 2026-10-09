@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 const STORAGE_KEY = 'dep-planner-v1';
+const POS_KEY = 'dep-planner-positions-v1'; // manual block placement, kept apart from the engine
 const HISTORY_LIMIT = 100;
 const FIT_MIN_K = 0.35;  // smallest scale fit-to-view uses; text counter-scales to stay readable
 const COMPACT_K = 0.7;    // below this, cards drop secondary lines
@@ -31,6 +32,18 @@ const ARROW_DEFS = `<defs>
 
 let engine = loadFromStorage() || new GraphEngine();
 let layout = computeLayout(engine);
+let manualPos = loadPositions(); // taskId -> {x, y} for blocks the user dragged
+let drag = null;                  // state of the block currently being dragged
+
+function loadPositions() {
+  try { return JSON.parse(localStorage.getItem(POS_KEY)) || {}; }
+  catch (e) { return {}; }
+}
+
+function savePositions() {
+  try { localStorage.setItem(POS_KEY, JSON.stringify(manualPos)); }
+  catch (e) { console.warn('Could not save block positions:', e); }
+}
 
 const undoStack = [];
 const redoStack = [];
@@ -66,6 +79,7 @@ const els = {
   nodes: $('nodes'),
   emptyHint: $('empty-hint'),
   edgePanBtn: $('edge-pan'),
+  autoArrange: $('auto-arrange'),
   zoomFit: $('zoom-fit'),
   inspector: $('inspector'),
   overrideDialog: $('override-dialog'),
@@ -161,6 +175,9 @@ function showBanner(message, kind) {
 function render() {
   if (selectedId && !engine.tasks.has(selectedId)) selectedId = null;
   layout = computeLayout(engine);
+  for (const id of Object.keys(manualPos)) {
+    if (!engine.tasks.has(id)) delete manualPos[id];
+  }
 
   renderPrereqOptions();
   renderDiagnostics();
@@ -217,21 +234,38 @@ function renderOverrides() {
   }
 }
 
-/** Draws every node and every edge from the current layout. Read-only. */
-function renderCanvas() {
-  const { pos, width, height } = layout;
-  els.world.style.width = width + 'px';
-  els.world.style.height = height + 'px';
-  els.edges.setAttribute('width', width);
-  els.edges.setAttribute('height', height);
-  els.edges.setAttribute('viewBox', `0 0 ${width} ${height}`);
-  applyView();
+/** Current top-left of a task: its manual placement if the user moved it, otherwise the automatic layout. */
+function posOf(id) {
+  return manualPos[id] || layout.pos[id];
+}
 
-  // Edges
+/** World size: automatic layout bounds, grown to include any manually placed block. */
+function worldSize() {
+  let w = layout.width, h = layout.height;
+  for (const id of engine.tasks.keys()) {
+    const p = posOf(id);
+    if (!p) continue;
+    w = Math.max(w, p.x + NODE_W + PAD);
+    h = Math.max(h, p.y + NODE_H + PAD);
+  }
+  return { w, h };
+}
+
+function updateWorldSize() {
+  const { w, h } = worldSize();
+  els.world.style.width = w + 'px';
+  els.world.style.height = h + 'px';
+  els.edges.setAttribute('width', w);
+  els.edges.setAttribute('height', h);
+  els.edges.setAttribute('viewBox', `0 0 ${w} ${h}`);
+}
+
+/** Draws every dependency arrow from current task positions. Read-only. */
+function renderEdges() {
   let svg = ARROW_DEFS;
   for (const [u, kids] of engine.adj) {
     for (const v of kids) {
-      const a = pos[u], b = pos[v];
+      const a = posOf(u), b = posOf(v);
       if (!a || !b) continue;
       const crit = engine.tasks.get(u).isCritical && engine.tasks.get(v).isCritical;
       const hl = selectedId !== null && (u === selectedId || v === selectedId);
@@ -241,11 +275,17 @@ function renderCanvas() {
     }
   }
   els.edges.innerHTML = svg;
+}
 
-  // Nodes
+/** Draws every node and every edge. Read-only with respect to engine state. */
+function renderCanvas() {
+  updateWorldSize();
+  applyView();
+  renderEdges();
+
   els.nodes.innerHTML = '';
   for (const t of engine.tasks.values()) {
-    const p = pos[t.id];
+    const p = posOf(t.id);
     const state = stateOf(t);
     const ui = STATE_UI[state];
     const nParents = engine.revAdj.get(t.id).size;
@@ -355,23 +395,25 @@ function applyView() {
 /** Keeps at least a sliver of the graph on screen so panning can't lose it. */
 function clampView() {
   const r = els.viewport.getBoundingClientRect();
-  if (!layout.width) return;
+  const { w, h } = worldSize();
+  if (!w) return;
   const m = 60;
-  view.x = clamp(view.x, m - layout.width * view.k, r.width - m);
-  view.y = clamp(view.y, m - layout.height * view.k, r.height - m);
+  view.x = clamp(view.x, m - w * view.k, r.width - m);
+  view.y = clamp(view.y, m - h * view.k, r.height - m);
 }
 
 function fitView() {
   const r = els.viewport.getBoundingClientRect();
-  if (!engine.tasks.size || !r.width || !layout.width) {
+  const { w, h } = worldSize();
+  if (!engine.tasks.size || !r.width || !w) {
     view.x = 0; view.y = 0; view.k = 1;
     applyView();
     return;
   }
-  const k = clamp(Math.min(r.width / layout.width, r.height / layout.height, 1), FIT_MIN_K, 1);
+  const k = clamp(Math.min(r.width / w, r.height / h, 1), FIT_MIN_K, 1);
   view.k = k;
-  view.x = (r.width - layout.width * k) / 2;
-  view.y = (r.height - layout.height * k) / 2;
+  view.x = (r.width - w * k) / 2;
+  view.y = (r.height - h * k) / 2;
   applyView();
   hasFit = true;
 }
@@ -384,6 +426,7 @@ els.viewport.addEventListener('pointerdown', (e) => {
   els.viewport.classList.add('panning');
 });
 els.viewport.addEventListener('pointermove', (e) => {
+  if (drag) return;
   pointer = { x: e.clientX, y: e.clientY };
   if (!panning) {
     startEdgePan();
@@ -409,7 +452,7 @@ function edgeVelocity(p, size) {
 /** Scrolls the view while the pointer sits near any canvas edge. Stops when it leaves. */
 function edgeStep() {
   edgeRaf = 0;
-  if (!edgePan || !pointer || panning) return;
+  if (!edgePan || !pointer || panning || drag) return;
   const r = els.viewport.getBoundingClientRect();
   const vx = edgeVelocity(pointer.x - r.left, r.width);
   const vy = edgeVelocity(pointer.y - r.top, r.height);
@@ -424,6 +467,13 @@ function edgeStep() {
 function startEdgePan() {
   if (edgePan && !edgeRaf) edgeRaf = requestAnimationFrame(edgeStep);
 }
+
+els.autoArrange.addEventListener('click', () => {
+  manualPos = {};
+  savePositions();
+  hasFit = false;
+  render();
+});
 
 els.edgePanBtn.addEventListener('click', () => {
   edgePan = !edgePan;
@@ -450,14 +500,14 @@ els.nodes.addEventListener('click', (e) => {
   renderSelectionOnly();
 });
 
-/** Nearest node by vertical distance among candidates, for keyboard movement. */
+/** Nearest candidate by vertical distance, for keyboard movement between columns. */
 function nearestByY(candidates, fromId) {
-  const fy = layout.pos[fromId].y;
+  const fy = posOf(fromId).y;
   return candidates.sort((a, b) =>
-    Math.abs(layout.pos[a].y - fy) - Math.abs(layout.pos[b].y - fy) || layout.pos[a].y - layout.pos[b].y)[0];
+    Math.abs(posOf(a).y - fy) - Math.abs(posOf(b).y - fy) || posOf(a).y - posOf(b).y)[0];
 }
 
-/** Keyboard movement: arrows follow dependency edges and columns; Enter selects. */
+/** Keyboard movement: arrows follow dependency edges and move up/down to the nearest block in that direction. */
 els.nodes.addEventListener('keydown', (e) => {
   const node = e.target.closest('.node');
   if (!node) return;
@@ -476,10 +526,17 @@ els.nodes.addEventListener('keydown', (e) => {
     const parents = [...engine.revAdj.get(id)];
     next = parents.length ? nearestByY(parents, id) : null;
   } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-    const x = layout.pos[id].x;
-    const column = [...engine.tasks.keys()].filter((t) => t !== id && layout.pos[t].x === x);
-    const below = column.filter((t) => (e.key === 'ArrowDown' ? layout.pos[t].y > layout.pos[id].y : layout.pos[t].y < layout.pos[id].y));
-    next = below.length ? nearestByY(below, id) : null;
+    const from = posOf(id);
+    const dir = e.key === 'ArrowDown' ? 1 : -1;
+    let bestD = Infinity;
+    for (const t of engine.tasks.keys()) {
+      if (t === id) continue;
+      const p = posOf(t);
+      const dy = (p.y - from.y) * dir;
+      if (dy <= 0) continue;
+      const d = dy + Math.abs(p.x - from.x) * 0.5;
+      if (d < bestD) { bestD = d; next = t; }
+    }
   } else {
     return;
   }
@@ -489,6 +546,44 @@ els.nodes.addEventListener('keydown', (e) => {
     renderSelectionOnly();
     els.nodes.querySelector(`.node[data-id="${next}"]`)?.focus();
   }
+});
+
+// ---- dragging blocks: move anywhere, edges follow, position is saved ----
+
+els.nodes.addEventListener('pointerdown', (e) => {
+  const node = e.target.closest('.node');
+  if (!node) return;
+  e.stopPropagation(); // don't let the canvas start a pan
+  const p = posOf(node.dataset.id);
+  drag = { id: node.dataset.id, node, sx: e.clientX, sy: e.clientY, ox: p.x, oy: p.y, moved: false };
+  node.setPointerCapture(e.pointerId);
+});
+
+els.nodes.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const dx = e.clientX - drag.sx;
+  const dy = e.clientY - drag.sy;
+  if (!drag.moved) {
+    if (Math.abs(dx) + Math.abs(dy) < 4) return; // a small wiggle is a click, not a move
+    drag.moved = true;
+    drag.node.classList.add('dragging');
+  }
+  // Screen pixels to world units: divide by the current scale.
+  const p = { x: Math.max(0, drag.ox + dx / view.k), y: Math.max(0, drag.oy + dy / view.k) };
+  manualPos[drag.id] = p;
+  drag.node.style.left = p.x + 'px';
+  drag.node.style.top = p.y + 'px';
+  updateWorldSize();
+  renderEdges();
+});
+
+els.nodes.addEventListener('pointerup', () => {
+  if (!drag) return;
+  if (drag.moved) {
+    savePositions();
+    drag.node.classList.remove('dragging');
+  }
+  drag = null;
 });
 
 els.inspector.addEventListener('click', (e) => {
@@ -721,6 +816,8 @@ els.presetSelect.addEventListener('change', () => {
   });
   selectedId = null;
   hasFit = false;
+  manualPos = {};
+  savePositions();
   showBanner(`Loaded "${preset.name}".`, 'ok');
   render();
 });
@@ -735,6 +832,8 @@ els.resetBtn.addEventListener('click', () => {
   mutate(() => { engine = new GraphEngine(); });
   selectedId = null;
   hasFit = false;
+  manualPos = {};
+  savePositions();
   els.bannerPanel.hidden = true;
   render();
 });
