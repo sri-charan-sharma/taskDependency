@@ -6,9 +6,7 @@
 
 const STORAGE_KEY = 'dep-planner-v1';
 const HISTORY_LIMIT = 100;
-const MIN_K = 0.35;       // text counter-scales, so this is the smallest readable zoom
-const MAX_K = 2;
-const FIT_MIN_K = 0.35;
+const FIT_MIN_K = 0.35;  // smallest scale fit-to-view uses; text counter-scales to stay readable
 const COMPACT_K = 0.7;    // below this, cards drop secondary lines
 const EDGE_ZONE = 56;     // px from a canvas edge where edge-pan starts
 const EDGE_SPEED = 16;   // px per frame at the very edge
@@ -67,9 +65,7 @@ const els = {
   edges: $('edges'),
   nodes: $('nodes'),
   emptyHint: $('empty-hint'),
-  zoomIn: $('zoom-in'),
   edgePanBtn: $('edge-pan'),
-  zoomOut: $('zoom-out'),
   zoomFit: $('zoom-fit'),
   inspector: $('inspector'),
   overrideDialog: $('override-dialog'),
@@ -365,21 +361,6 @@ function clampView() {
   view.y = clamp(view.y, m - layout.height * view.k, r.height - m);
 }
 
-function zoomAt(px, py, factor) {
-  const k = clamp(view.k * factor, MIN_K, MAX_K);
-  const wx = (px - view.x) / view.k;
-  const wy = (py - view.y) / view.k;
-  view.k = k;
-  view.x = px - wx * k;
-  view.y = py - wy * k;
-  applyView();
-}
-
-function zoomCenter(factor) {
-  const r = els.viewport.getBoundingClientRect();
-  zoomAt(r.width / 2, r.height / 2, factor);
-}
-
 function fitView() {
   const r = els.viewport.getBoundingClientRect();
   if (!engine.tasks.size || !r.width || !layout.width) {
@@ -387,19 +368,13 @@ function fitView() {
     applyView();
     return;
   }
-  const k = clamp(Math.min(r.width / layout.width, r.height / layout.height, 1), FIT_MIN_K, MAX_K);
+  const k = clamp(Math.min(r.width / layout.width, r.height / layout.height, 1), FIT_MIN_K, 1);
   view.k = k;
   view.x = (r.width - layout.width * k) / 2;
   view.y = (r.height - layout.height * k) / 2;
   applyView();
   hasFit = true;
 }
-
-els.viewport.addEventListener('wheel', (e) => {
-  e.preventDefault();
-  const r = els.viewport.getBoundingClientRect();
-  zoomAt(e.clientX - r.left, e.clientY - r.top, e.deltaY < 0 ? 1.1 : 1 / 1.1);
-}, { passive: false });
 
 let panning = null;
 els.viewport.addEventListener('pointerdown', (e) => {
@@ -464,8 +439,6 @@ els.viewport.addEventListener('pointerup', () => {
   els.viewport.classList.remove('panning');
 });
 
-els.zoomIn.addEventListener('click', () => zoomCenter(1.2));
-els.zoomOut.addEventListener('click', () => zoomCenter(1 / 1.2));
 els.zoomFit.addEventListener('click', fitView);
 
 // ---- selection -----------------------------------------------------
